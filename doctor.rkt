@@ -29,6 +29,7 @@
                 (newline)
                 (loop (sub1 remaining))))))))
 
+; спрашивает имя следующего пациента и берёт первый элемент введённого списка
 (define (ask-patient-name)
   (displayln '(next!))
   (displayln '(who are you?))
@@ -89,6 +90,8 @@
 )
 
 ; генерация ответной реплики по user-response -- реплике от пользователя, и history -- вектору предыдущих реплик
+; границы random исключают неприменимые стратегии: 0 -- ответ по истории,
+; 3 -- ответ по ключевому слову; стратегии 1 и 2 применимы всегда
 (define (reply-v2 user-response history)
       (case (random (if (history-applicable? history) 0 1)
                     (if (keywords-applicable? user-response) 4 3))
@@ -99,23 +102,38 @@
       )
 )
 
-; каждая группа задаёт вектор слов и вектор шаблонов ответов
-(define (make-keywords-structure groups)
-  (let ((table (make-hasheq)))
-    (for ([group (in-vector groups)])
-      (let ((words (vector-ref group 0))
-            (templates (vector-ref group 1)))
-        (for ([word (in-vector words)])
-          (let ((answers
-                 (vector-map
-                  (lambda (template)
-                    (map (lambda (part) (if (eq? part '*) word part)) template))
-                  templates)))
-            (hash-update! table word
-                          (lambda (previous) (vector-append previous answers))
-                          #())))))
-    table))
+; в Racket нет vector-foldl, реализуем для случая с одним вектором (vect-foldl f init vctr)
+; у f три параметра i -- индекс текущего элемента, result -- текущий результат свёртки, elem -- текущий элемент вектора
+(define (vector-foldl f init vctr)
+ (let ((length (vector-length vctr)))
+  (let loop ((i 0) (result init))
+   (if (= i length) result
+    (loop (add1 i) (f i result (vector-ref vctr i)))))))
 
+; каждая группа задаёт вектор слов и вектор шаблонов ответов
+; свёртка строит неизменяемую таблицу; ответы слова из нескольких групп объединяются
+(define (make-keywords-structure groups)
+  (vector-foldl
+   (lambda (i table group)
+     (let ((templates (vector-ref group 1)))
+       (vector-foldl
+        (lambda (j table word)
+          (hash-update table word
+                       (lambda (previous)
+                         (vector-append
+                          previous
+                          (vector-map
+                           (lambda (template)
+                             (map (lambda (part) (if (eq? part '*) word part))
+                                  template))
+                           templates)))
+                       #()))
+        table
+        (vector-ref group 0))))
+   (make-immutable-hasheq)
+   groups))
+
+; набор из трёх исходных и двух новых групп ключевых слов и шаблонов ответов
 (define keywords-structure
   (make-keywords-structure
    '#(
@@ -144,20 +162,18 @@
           (when did you first feel this way about * ?)
           (who could you talk to about * ?))))))
 
-; для быстрой проверки применимости храним только множество ключевых слов
-(define keyword-set (make-hasheq))
-(hash-for-each keywords-structure
-               (lambda (word answers) (hash-set! keyword-set word #t)))
-
+; проверяет наличие ключевого слова и останавливается на первом найденном
 (define (keywords-applicable? user-response)
-  (ormap (lambda (word) (hash-has-key? keyword-set word)) user-response))
+  (ormap (lambda (word) (hash-has-key? keywords-structure word)) user-response))
 
+; выбирает случайный элемент непустого списка
 (define (pick-random-list lst)
   (list-ref lst (random 0 (length lst))))
 
+; сохраняет повторы ключевых слов при фильтрации, затем выбирает ответ для слова
 (define (keywords-answer user-response)
   (let ((word (pick-random-list
-               (filter (lambda (word) (hash-has-key? keyword-set word))
+               (filter (lambda (word) (hash-has-key? keywords-structure word))
                        user-response))))
     (pick-random-vector (hash-ref keywords-structure word))))
 
@@ -268,14 +284,6 @@
              lst)
 )
 
-; в Racket нет vector-foldl, реализуем для случая с одним вектором (vect-foldl f init vctr)
-; у f три параметра i -- индекс текущего элемента, result -- текущий результат свёртки, elem -- текущий элемент вектора
-(define (vector-foldl f init vctr)
- (let ((length (vector-length vctr)))
-  (let loop ((i 0) (result init))
-   (if (= i length) result
-    (loop (add1 i) (f i result (vector-ref vctr i)))))))
-	
 ; аналогично от конца вектора к началу
 (define (vector-foldr f init vctr)
  (let ((length (vector-length vctr)))
