@@ -14,6 +14,27 @@
   (doctor-driver-loop-v2 name (vector))
 )
 
+; приём нескольких пациентов: stop-word завершает работу досрочно
+(define (visit-doctor-v2 stop-word max-patients)
+  (let loop ((remaining max-patients))
+    (if (zero? remaining)
+        (displayln '(time to go home))
+        (let ((name (ask-patient-name)))
+          (if (equal? name stop-word)
+              (displayln '(time to go home))
+              (begin
+                (printf "Hello, ~a!\n" name)
+                (displayln '(what seems to be the trouble?))
+                (doctor-driver-loop-v2 name (vector))
+                (newline)
+                (loop (sub1 remaining))))))))
+
+(define (ask-patient-name)
+  (displayln '(next!))
+  (displayln '(who are you?))
+  (display "**")
+  (car (read)))
+
 ; цикл диалога Доктора с пациентом
 ; параметр name -- имя пациента
 (define (doctor-driver-loop name)
@@ -37,13 +58,13 @@
 ; флаг равен #t, если реплика уже использовалась для построения ответа, и #f иначе
 (define (doctor-driver-loop-v2 name history)
     (newline)
-    (print '**) ; доктор ждёт ввода реплики пациента, приглашением к которому является **
+    (display "**") ; доктор ждёт ввода реплики пациента, приглашением к которому является **
     (let ((user-response (read)))
       (cond
             ((equal? user-response '(goodbye)) ; реплика '(goodbye) служит для выхода из цикла
              (printf "Goodbye, ~a!\n" name)
-             (print '(see you next week)))
-            (else (print (reply-v2 user-response history)) ; иначе Доктор генерирует ответ по истории предыдущих реплик и печатает его
+             (display '(see you next week)))
+            (else (display (reply-v2 user-response history)) ; иначе Доктор генерирует ответ по истории предыдущих реплик и печатает его
                   (doctor-driver-loop-v2 name (add-to-history user-response history)) ; затем реплика запоминается, и цикл продолжается
              )
        )
@@ -69,20 +90,84 @@
 
 ; генерация ответной реплики по user-response -- реплике от пользователя, и history -- вектору предыдущих реплик
 (define (reply-v2 user-response history)
-      (case (random 0 (if (history-applicable? history) 3 2)) ; с равной вероятностью выбирается один из применимых способов построения ответа
-          ((0) (hedge-answer))  ; 1й способ
-          ((1) (qualifier-answer user-response)) ; 2й способ
-          ((2) (history-answer history)) ; 3й способ, применим только при наличии неиспользованной реплики в истории
+      (case (random (if (history-applicable? history) 0 1)
+                    (if (keywords-applicable? user-response) 4 3))
+          ((0) (history-answer history)) ; применим при наличии неиспользованной реплики
+          ((1) (hedge-answer))
+          ((2) (qualifier-answer user-response))
+          ((3) (keywords-answer user-response)) ; применим при наличии ключевого слова
       )
 )
 
-; проверка применимости 3го способа: не #f, если в history есть реплика с флагом #f
+; каждая группа задаёт вектор слов и вектор шаблонов ответов
+(define (make-keywords-structure groups)
+  (let ((table (make-hasheq)))
+    (for ([group (in-vector groups)])
+      (let ((words (vector-ref group 0))
+            (templates (vector-ref group 1)))
+        (for ([word (in-vector words)])
+          (let ((answers
+                 (vector-map
+                  (lambda (template)
+                    (map (lambda (part) (if (eq? part '*) word part)) template))
+                  templates)))
+            (hash-update! table word
+                          (lambda (previous) (vector-append previous answers))
+                          #())))))
+    table))
+
+(define keywords-structure
+  (make-keywords-structure
+   '#(
+      #(#(depressed suicide scheme university)
+        #((when you feel depressed go out for ice cream)
+          (depression is a disease that can be treated)
+          (what helps you when you feel this way)
+          (can you tell me when these feelings began)))
+      #(#(mother father parents brother sister uncle aunt grandma grandpa)
+        #((tell me more about your *)
+          (i want to know all about your *)
+          (why do you feel that way about your * ?)
+          (how often do you talk with your * ?)
+          (what would you like your * to understand ?)))
+      #(#(university scheme lections)
+        #((your education is important)
+          (how much time do you spend on your studies ?)
+          (what do you enjoy about studying ?)
+          (which part of your studies troubles you most ?)))
+      #(#(work job boss colleague)
+        #((tell me more about your *)
+          (what is most difficult about your * ?)
+          (how does your * make you feel ?)))
+      #(#(friend friends friendship lonely)
+        #((what does * mean to you ?)
+          (when did you first feel this way about * ?)
+          (who could you talk to about * ?))))))
+
+; для быстрой проверки применимости храним только множество ключевых слов
+(define keyword-set (make-hasheq))
+(hash-for-each keywords-structure
+               (lambda (word answers) (hash-set! keyword-set word #t)))
+
+(define (keywords-applicable? user-response)
+  (ormap (lambda (word) (hash-has-key? keyword-set word)) user-response))
+
+(define (pick-random-list lst)
+  (list-ref lst (random 0 (length lst))))
+
+(define (keywords-answer user-response)
+  (let ((word (pick-random-list
+               (filter (lambda (word) (hash-has-key? keyword-set word))
+                       user-response))))
+    (pick-random-vector (hash-ref keywords-structure word))))
+
+; проверка применимости ответа по истории: не #f, если в history есть реплика с флагом #f
 ; vector-member возвращает индекс первой такой реплики, и проход по вектору на ней прекращается
 (define (history-applicable? history)
   (vector-member #f history (lambda (flag record) (equal? flag (cdr record))))
 )
 
-; 3й способ генерации ответной реплики -- возврат к одной из ранее сказанных пациентом реплик с заменой лица
+; генерация ответной реплики по истории -- возврат к одной из ранее сказанных пациентом реплик с заменой лица
 ; выбранная реплика помечается в history флагом #t, чтобы повторно не использоваться
 (define (history-answer history)
   (let* ((record (pick-random-vector (vector-filter (lambda (record) (not (cdr record))) history))) ; случайная реплика из неиспользованных
